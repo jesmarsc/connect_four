@@ -1,6 +1,6 @@
 /*
 ===============================================================================
- Name        : connectfour.c
+ Name        : connect_four.c
  Author      : $(author)
  Version     :
  Copyright   : $(copyright)
@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <board.h>
-
 
 /*****************************************************************************
  * Private types/enumerations/variables
@@ -52,6 +51,7 @@ bool redTurn;
 bool drawFlag;
 bool dropFlag;
 bool moveFlag;
+bool winFlag;
 
 /*****************************************************************************
  * Private functions
@@ -94,17 +94,6 @@ static void i2c_app_init(I2C_ID_T id, int speed)
 	i2c_set_mode(id, 0);
 }
 
-static void i2c_read_setup(I2C_XFER_T *xfer, uint8_t addr, int numBytes)
-{
-	xfer->slaveAddr = addr;
-	xfer->rxBuff = 0;
-	xfer->txBuff = 0;
-	xfer->txSz = 0;
-	xfer->rxSz = numBytes;
-	xfer->rxBuff = i2Cbuffer[1];
-}
-
-
 /*****************************************************************************
  * Public functions
  ****************************************************************************/
@@ -117,7 +106,7 @@ void I2C0_IRQHandler(void)
 void writeDisplay(void){
 	Chip_I2C_MasterSend(I2C0, 0x70, 0x00, 1);
 	int i;
-	for( i = 0; i < 8; i++){
+	for(i = 0; i < 8; i++){
 		fullBuff[2*i] = redbuffer[i] & 0xFF;
 		fullBuff[2*i + 1] = greenbuffer[i] & 0xFF;
 	}
@@ -127,7 +116,8 @@ void writeDisplay(void){
 void GPIO_IRQHandler(void){
 	uint32_t val;
 	val = Chip_GPIO_ReadValue(LPC_GPIO, 2);
-	if(fDebouncing) {}
+
+	if(fDebouncing || winFlag) {}
 	else {
 		if(val == drop){
 			dropFlag = true;
@@ -149,35 +139,43 @@ void TIMER0_IRQHandler(void){
 	Chip_TIMER_ClearMatch(LPC_TIMER0,0);  // Clear TIMER0 interrupt
 }
 
-void drawPixel(uint16_t x, uint16_t y, uint16_t color) {
-  if ((y < 0) || (y >= 8)) return;
-  if ((x < 0) || (x >= 8)) return;
+void TIMER1_IRQHandler(void){
+	Chip_TIMER_Disable(LPC_TIMER1);		  // Stop TIMER0
+	Chip_TIMER_Reset(LPC_TIMER1);		  // Reset TIMER0
+	Chip_TIMER_ClearMatch(LPC_TIMER1,0);  // Clear TIMER0 interrupt
+	winFlag = false;
+	drawFlag = true;
+}
 
-  if (color == 1) {
-	  // Turn on green LED.
-	  greenbuffer[y] |= 1 << (x);
-	  // Turn off red LED
-	  y+=1;
-	  redbuffer[y] &= ~(1 << (x));
-  } else if (color == 2) {
-	  // Turn off green LED.
-	  greenbuffer[y] &= ~(1 << (x));
-	  // Turn on red LED.
-	  y+=1;
-	  redbuffer[y] |= 1 << x;
-  } else if (color == 3) {
-    // Turn on green and red LED.
-    //displaybuffer[y] |= (1 << (x+8)) | (1 << x);
-    greenbuffer[y] |= 1 << x;
-    y += 1;
-    redbuffer[y] |= 1 << x;
-  } else if (color == 0) {
-    // Turn off green and red LED.
-    //displaybuffer[y] &= ~(1 << x) & ~(1 << (x+8));
-	  greenbuffer[y] &= ~(1 << x);
-	  y+=1;
-	  redbuffer[y] &= ~(1 << x);
-  }
+void drawPixel(uint16_t x, uint16_t y, uint16_t color) {
+	if ((y < 0) || (y >= 8)) return;
+	if ((x < 0) || (x >= 8)) return;
+
+	if (color == 1) {
+		// Turn on green LED.
+		greenbuffer[y] |= 1 << (x);
+		// Turn off red LED
+		y+=1;
+		redbuffer[y] &= ~(1 << (x));
+	} else if (color == 2) {
+		// Turn off green LED.
+		greenbuffer[y] &= ~(1 << (x));
+		// Turn on red LED.
+		y+=1;
+		redbuffer[y] |= 1 << x;
+	} else if (color == 3) {
+		// Turn on green and red LED.
+		//displaybuffer[y] |= (1 << (x+8)) | (1 << x);
+		greenbuffer[y] |= 1 << x;
+		y += 1;
+		redbuffer[y] |= 1 << x;
+	} else if (color == 0) {
+		// Turn off green and red LED.
+		//displaybuffer[y] &= ~(1 << x) & ~(1 << (x+8));
+		greenbuffer[y] &= ~(1 << x);
+		y+=1;
+		redbuffer[y] &= ~(1 << x);
+	}
 }
 
 void drawBoard(void){
@@ -186,6 +184,7 @@ void drawBoard(void){
 	for(i = 0; i < 8; i++){
 		for(j = 0; j < 6; j++){
 			drawPixel(i, j, 3);
+			boardData[i][j] = 3;
 		}
 	}
 	writeDisplay();
@@ -194,9 +193,9 @@ void drawBoard(void){
 void reDraw(void){
 	int a;
 	int b;
+	uint8_t color;
 	for(a = 0; a < 8; a++){
 		for(b = 0; b < 7; b++){
-			uint8_t color;
 			color = boardData[a][b];
 			drawPixel(a, b, color);
 		}
@@ -209,6 +208,7 @@ void clearBoard(void){
 	for(i = 0; i < 8; i++){
 		for(j = 0; j < 7; j++){
 			drawPixel(i, j, 0);
+			boardData[i][j] = 0;
 		}
 	}
 	writeDisplay();
@@ -249,40 +249,88 @@ void move_drop(void){
 	reDraw();
 }
 
-void make_move(int column) {
-	if(!valid_move(column)) {
-		return;
+bool win_check(Move move) {
+	bool victory = false;
+	//VERTICAL
+	int x = move.column;
+	int y = move.row;
+	if(y >= 3){
+		if(boardData[x][y] == boardData[x][y-1] && boardData[x][y] == boardData[x][y-2] && boardData[x][y] == boardData[x][y-3]){
+			victory = true;
+			return victory;
+		}
 	}
 
-	Move move = get_move(column);
-	boardData[move.column][move.row] = redTurn + 1;
-	redTurn = !redTurn;
-	boardData[dropPosition][6] = 0;
-	dropPosition = 7;
-	boardData[dropPosition][6] = redTurn + 1;
-	reDraw();
-}
+	//HORIZONTAL
+	int i;
+	for(i = 0; i < 5; i++){
+		if(boardData[i][y] != 3 && boardData[i][y] == boardData[i+1][y] && boardData[i][y] == boardData[i+2][y] && boardData[i][y] == boardData[i+3][y]){
+			victory = true;
+			return victory;
+		}
+	}
 
-int win_check() {
-	int i, j;
-	int victory = 0;
-	for(i = 0; i < 8; i++){
-		for(j = 0; j < 6; j++){
-			if(i < 5){ // check horizontal
-				victory = boardData[i][j] + boardData[i+1][j] + boardData[i+2][j] + boardData[i+3][j];
+	//RIGHT DIAGONAL
+	int a, b;
+	a = x;
+	b = y;
+	while(a < 8 && b > 0){
+		a++;
+		b--;
+	}
+
+	if(a >= 3 && b <= 2){
+		while(b+3 < 7 && a-3 >= 0){
+			if(boardData[a][b] != 3 && boardData[a][b] == boardData[a-1][b+1] && boardData[a][b] == boardData[a-2][b+2] && boardData[a][b] == boardData[a-3][b+3]){
+				victory = true;
+				return victory;
 			}
-			else if((victory != 4) && (victory != 8) && j < 3){ // check vertical
-				victory = boardData[i][j] + boardData[i][j+1] + boardData[i][j+2] + boardData[i][j+3];
+			a--;
+			b++;
+		}
+	}
+
+	//LEFT DIAGONAL
+	a = x;
+	b = y;
+	while(a > 0 && b > 0){
+		a--;
+		b--;
+	}
+
+	if(a <= 4 && b <= 2){
+		while(a + 3 < 8 && b + 3 < 7){
+			if(boardData[a][b] != 3 && boardData[a][b] == boardData[a+1][b+1] && boardData[a][b] == boardData[a+2][b+2] && boardData[a][b] == boardData[a+3][b+3]){
+				victory = true;
 			}
-			else if((victory != 4) && (victory != 8) && i < 5 && j < 3){ // check right diagonal
-				victory = boardData[i][j] + boardData[i+1][j+1] + boardData[i+2][j+2] + boardData[i+3][j+3];
-			}
-			else if((victory != 4) && (victory != 8) && i > 2 && j < 3){ // check left diagonal
-				victory = boardData[i][j] + boardData[i+1][j-1] + boardData[i+2][j-2] + boardData[i+3][j-3];
-			}
+			a++;
+			b++;
 		}
 	}
 	return victory;
+}
+
+bool make_move(int column) {
+	if(!valid_move(column)) {
+		return false;
+	}
+
+	Move move = get_move(column);
+	boardData[dropPosition][6] = 0;
+	fDebouncing = true;
+	int y;
+	for(y = 5; y > move.row; y--){
+		boardData[move.column][y] = redTurn + 1;
+		reDraw();
+		boardData[move.column][y] = 3;
+	}
+	boardData[move.column][move.row] = redTurn + 1;
+	redTurn = !redTurn;
+	dropPosition = 7;
+	boardData[dropPosition][6] = redTurn + 1;
+	reDraw();
+	fDebouncing = false;
+	return win_check(move);
 }
 
 int main(void) {
@@ -292,26 +340,35 @@ int main(void) {
 	fDebouncing = false;
 	redTurn = false;
 
+	uint8_t happyfaceGreen[8][7] = {
+			{3,3,3,3,3,3,3},
+			{3,3,1,3,1,1,3},
+			{3,1,3,3,1,1,3},
+			{3,1,3,3,3,3,3},
+			{3,1,3,3,3,3,3},
+			{3,1,3,3,1,1,3},
+			{3,3,1,3,1,1,3},
+			{3,3,3,3,3,3,3}
+	};
+
+	uint8_t happyfaceRed[8][7] = {
+			{3,3,3,3,3,3,3},
+			{3,3,2,3,2,2,3},
+			{3,2,3,3,2,2,3},
+			{3,2,3,3,3,3,3},
+			{3,2,3,3,3,3,3},
+			{3,2,3,3,2,2,3},
+			{3,3,2,3,2,2,3},
+			{3,3,3,3,3,3,3}
+	};
+
+
 	Board_Init();
 	SystemCoreClockUpdate();
 	i2c_app_init(I2C0, SPEED_400KHZ);
 	i2c_set_mode(I2C0, 0);
 
 	//BOARD STATE SETUP
-	int x, y;
-	for(x = 0; x < 8; x++){
-		for(y = 0; y < 7; y++){
-			boardData[x][y] = 3;
-		}
-	}
-
-	boardData[7][6] = 1;
-	dropPosition = 7;
-	x = 0;
-	for(x = 0; x < 7; x++){
-		boardData[x][6] = 0;
-	}
-
 	uint8_t begin, display, brightness;
 	begin = 0x21;		//system setup
 	display = 0x81;		//display setup
@@ -320,7 +377,11 @@ int main(void) {
 	Chip_I2C_MasterSend(I2C0, 0x70, &begin , 1);	//system setup
 	Chip_I2C_MasterSend(I2C0, 0x70, &display, 1);	//display setup
 	Chip_I2C_MasterSend(I2C0, 0x70, &brightness, 1);//brightness setup
+
 	clearBoard();
+	boardData[7][6] = 1;
+	dropPosition = 7;
+	drawBoard();
 	reDraw();
 
 	//INTERRUPT SETUP
@@ -347,17 +408,32 @@ int main(void) {
 	Chip_TIMER_SetMatch(LPC_TIMER0,0,100);				// Set match value
 	Chip_TIMER_MatchEnableInt(LPC_TIMER0, 0);			// Configure to trigger interrupt on match
 
+	//Timer Debounce (to avoid coupling);
+	Chip_TIMER_Init(LPC_TIMER1);						// Initialize TIMER0
+	Chip_TIMER_PrescaleSet(LPC_TIMER1,120000);			// Set prescale value
+	Chip_TIMER_SetMatch(LPC_TIMER1,0,5000);				// Set match value
+	Chip_TIMER_MatchEnableInt(LPC_TIMER1, 0);			// Configure to trigger interrupt on match
+
 	NVIC_ClearPendingIRQ(TIMER0_IRQn);
 	NVIC_EnableIRQ(TIMER0_IRQn);
+
+	NVIC_ClearPendingIRQ(TIMER1_IRQn);
+	NVIC_EnableIRQ(TIMER1_IRQn);
 
 	NVIC_ClearPendingIRQ(GPIO_IRQn);
 	NVIC_EnableIRQ(GPIO_IRQn);
 
-	int gameOver;
 	while(1){
 		__WFI();
 		if(drawFlag){
 			drawFlag = false;
+			redTurn = false;
+			display = 0x81;
+			Chip_I2C_MasterSend(I2C0, 0x70, &display, 1);	//display setup
+			clearBoard();
+			boardData[7][6] = 1;
+			dropPosition = 7;
+			drawBoard();
 			reDraw();
 		}
 		if(moveFlag){
@@ -366,7 +442,19 @@ int main(void) {
 		}
 		if(dropFlag){
 			dropFlag = false;
-			make_move(dropPosition);
+			winFlag = make_move(dropPosition);
+			if(winFlag){
+				if(!redTurn){
+					memcpy(boardData, happyfaceRed, 8*7*sizeof(uint8_t));
+				}
+				else{
+					memcpy(boardData, happyfaceGreen, 8*7*sizeof(uint8_t));
+				}
+				display = 0x83;
+				Chip_I2C_MasterSend(I2C0, 0x70, &display, 1);	//display setup
+				reDraw();
+				Chip_TIMER_Enable(LPC_TIMER1);
+			}
 		}
 	}
 	Chip_I2C_DeInit(I2C0);
